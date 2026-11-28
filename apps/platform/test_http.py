@@ -37,8 +37,8 @@ def request(path, data=None, content_type="application/json", headers=None, expe
             return exc.read()
 
 
-def run(dataset, expected, options):
-    payload = json.dumps({"dataset": dataset, "options": options}).encode()
+def run(dataset, expected, options, **settings):
+    payload = json.dumps({"dataset": dataset, "options": options, **settings}).encode()
     job = json.loads(request("/v1/runs", payload))
     url = "/v1/runs/" + job["id"]
     assert job["state"] == "queued"
@@ -129,6 +129,41 @@ def verify_frozen_defaults(dataset):
     with connect() as db:
         db.execute("UPDATE qbt_runs SET build = 'unavailable' WHERE id = %s", (new_run["id"],))
     request(f"/v1/runs/{new_run['id']}/repeat", b"", expected_status=409)
+
+
+def verify_windows(dataset):
+    config = {"train_months": 1, "test_months": 2, "step_months": 1}
+    source = Path("data/sample_btc_1h.csv")
+    status = run(dataset, "succeeded", {"strategy": "MomentumSMA"}, windows=config)
+    assert status["resolved_spec"]["manifest"]["windows"] == config
+    assert set(status["artifacts"]) == {"manifest.json", "summary.json", "report.html"}
+    summary_bytes = request(status["artifacts"]["summary.json"])
+    summary = json.loads(summary_bytes)
+    windows = summary["windows"]
+    assert summary["config"] == config and len(windows) == 4
+    assert summary["mean_return"] == sum(w["total_return"] for w in windows) / len(windows)
+    with tempfile.TemporaryDirectory() as directory:
+        tmp = Path(directory)
+        output = ["--output", str(tmp / "report.html"), "--summary", str(tmp / "summary.json")]
+        subprocess.run([BINARY, "walk-forward", "--input", str(source), "--strategy", "MomentumSMA",
+                        "--train", "1", "--test", "2", "--step", "1", *output], check=True)
+        assert (tmp / "summary.json").read_bytes() == summary_bytes
+        assert (tmp / "report.html").read_bytes() == request(status["artifacts"]["report.html"])
+        lines = source.read_text().splitlines()
+        for i, window in enumerate(windows):
+            start = (i + 1) * 720
+            bars = lines[start + 1:start + 1 + 1440]
+            assert window["bounds"]["test_start"] == bars[0].split(",")[0]
+            assert window["bounds"]["test_last"] == bars[-1].split(",")[0]
+            sliced = tmp / "slice.csv"
+            sliced.write_text("\n".join([lines[0], *bars]) + "\n")
+            subprocess.run([BINARY, "run", "--input", str(sliced), "--strategy", "MomentumSMA", *output], check=True)
+            reference = json.loads((tmp / "summary.json").read_bytes())["portfolios"][0]
+            for field in ("initial_capital", "final_equity", "total_return", "max_drawdown", "completed_trades"):
+                assert window[field] == reference[field], (i, field)
+    for change in ({"step_months": 0}, {"train_months": 6}, {"test_months": -1}):
+        payload = {"dataset": dataset, "windows": {**config, **change}}
+        request("/v1/runs", json.dumps(payload).encode(), expected_status=422)
 
 
 def upload(content, content_type="text/csv", *, query="", expected=201):
@@ -303,3 +338,4 @@ if __name__ == "__main__":
     request(f"/v1/runs/{failed['id']}/repeat", b"", expected_status=409)
     verify_idempotency()
     verify_frozen_defaults(sample["id"])
+    verify_windows(sample["id"])

@@ -173,6 +173,9 @@ of hourly execution bars with a funded reserve and no purchase.
 | `--test` | `6` | Test window (months) |
 | `--step` | `6` | Step (months) |
 | `--output` | `walk_forward_report.html` | Output HTML |
+| `--summary` | optional | Versioned JSON with UTC window boundaries and metrics |
+
+Each window starts with fresh capital and strategy state. One month is 720 consecutive hourly bars. The history offset precedes the first test bar. A step shorter than the test length produces overlapping windows. The JSON summary records the arithmetic mean of independent window returns as a fraction and the first and last included UTC bars for each test.
 
 ### `report`
 

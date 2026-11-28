@@ -89,10 +89,21 @@ Options = create_model(
 )
 
 
+Months = Annotated[int, Field(strict=True, ge=1, le=4294967295)]
+
+
+class Windows(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    train_months: Months
+    test_months: Months
+    step_months: Months
+
+
 class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dataset: DatasetID
     options: Options = Field(default_factory=Options)
+    windows: Windows | None = None
 
 
 @asynccontextmanager
@@ -216,13 +227,23 @@ def get_dataset(dataset_id: DatasetID):
 
 
 def freeze_run(dataset, options):
+    windows = options.get("windows")
+    if windows:
+        if options["strategy"] == COMPARISON_ID:
+            raise HTTPException(422, "Select one strategy for walk-forward")
+        if dataset["validation"] is None:
+            raise HTTPException(422, "Validate this dataset before evaluating windows")
+        required = (windows["train_months"] + windows["test_months"]) * 720
+        if dataset["validation"]["row_count"] < required:
+            raise HTTPException(422, f"Walk-forward requires at least {required} hourly bars")
     if dataset["validation"] is None:
         return None
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / ("input." + dataset["format"])
         source.write_bytes(dataset.pop("csv"))
         manifest = Path(tmp) / "manifest.json"
-        flags = option_flags({**options, "symbol": dataset["symbol"], "quote_currency": dataset["quote_currency"]})
+        execution = {key: value for key, value in options.items() if key != "windows"}
+        flags = option_flags({**execution, "symbol": dataset["symbol"], "quote_currency": dataset["quote_currency"]})
         try:
             result = subprocess.run([str(BINARY), "run", "--input", str(source), "--manifest-only",
                                      "--save-manifest", str(manifest), *flags], capture_output=True, timeout=30)
@@ -230,8 +251,11 @@ def freeze_run(dataset, options):
             raise HTTPException(503, "Run resolution timed out") from exc
         if result.returncode:
             raise HTTPException(422, result.stderr.decode(errors="replace")[:2000])
+        saved = manifest.read_text()
+        if windows:
+            saved = json.dumps({**json.loads(saved), "windows": windows})
         return Jsonb({"version": 1, "build": app.state.build, "dataset": dataset_metadata(dataset),
-                          "manifest": manifest.read_text()})
+                      "manifest": saved})
 
 
 @app.post("/v1/runs", status_code=202)
@@ -245,7 +269,10 @@ def submit(submission: Submission, idempotency_key: Annotated[list[str] | None, 
             raise HTTPException(422, "Idempotency-Key must contain 1–128 visible ASCII characters without commas")
 
     options = submission.options.model_dump()
-    explicit = Jsonb(submission.options.model_dump(exclude_unset=True))
+    explicit_options = submission.options.model_dump(exclude_unset=True)
+    if submission.windows is not None:
+        options["windows"] = explicit_options["windows"] = submission.windows.model_dump()
+    explicit = Jsonb(explicit_options)
     scope = LOCAL_RUN_SCOPE if key is not None else None
     with connect() as db:
         if key is not None:
@@ -303,7 +330,7 @@ def list_runs(limit: Annotated[int, Query(ge=1, le=100)] = 20, before: UUID | No
             where = "WHERE (created_at, id) < (%s, %s)"
             params.extend((anchor["created_at"], before))
         rows = db.execute(f"""
-            SELECT id, created_at, state, options->>'strategy' AS strategy,
+            SELECT id, created_at, state, options->>'strategy' AS strategy, options->'windows' AS windows,
                    options->'capital' AS capital, options->'daily_limit' AS daily_limit
             FROM qbt_runs {where}
             ORDER BY created_at DESC, id DESC LIMIT %s

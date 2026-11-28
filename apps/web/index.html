@@ -23,6 +23,13 @@
 <label>Quote currency <input id="quote-currency" maxlength="64" placeholder="Optional"></label>
 </div>
 </details>
+<label for="evaluation">Evaluation</label>
+<select id="evaluation"><option value="standard">Full dataset</option><option value="windows">Walk-forward</option></select>
+<fieldset id="window-options" hidden disabled><legend>Windows (30-day months)</legend>
+<label>History offset <input id="train-months" type="number" min="1" step="1" required value="1"></label>
+<label>Test length <input id="test-months" type="number" min="1" step="1" required value="1"></label>
+<label>Window step <input id="step-months" type="number" min="1" step="1" required value="1"></label>
+</fieldset>
 <label for="strategy">Strategy</label>
 <select id="strategy" name="strategy" required><option value="">Loading…</option></select>
 <div class="fields">
@@ -56,6 +63,13 @@
 <nav id="artifacts" aria-label="Result downloads"></nav>
 </section>
 </div>
+<section class="comparison" id="windows-result" aria-labelledby="windows-title" hidden>
+<h2 id="windows-title">Walk-forward results</h2>
+<p id="window-average"></p>
+<div class="comparison-scroll" tabindex="0"><table><thead><tr>
+<th>First test bar (UTC)</th><th>Last test bar (UTC)</th><th>Initial capital</th><th>Final equity</th><th>Return</th><th>Max drawdown</th>
+</tr></thead><tbody id="window-rows"></tbody></table></div>
+</section>
 <section class="comparison" id="comparison" aria-labelledby="comparison-title" hidden>
 <h2 id="comparison-title">Strategy comparison</h2>
 <p id="comparison-message" aria-live="polite"></p>

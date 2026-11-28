@@ -14,6 +14,8 @@ pub struct RunManifest {
     executable_xxh3_128: String,
     bars_xxh3_128: String,
     pub spec: RunSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<qbt_engine::backtest::WalkForwardConfig>,
     #[serde(default, skip_serializing_if = "DatasetMetadata::is_empty")]
     pub dataset_metadata: DatasetMetadata,
 }
@@ -55,6 +57,7 @@ impl RunManifest {
             executable_xxh3_128: executable_hash()?,
             bars_xxh3_128: bars_hash(series),
             spec,
+            windows: None,
             dataset_metadata,
         })
     }

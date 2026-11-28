@@ -110,8 +110,9 @@ def simulate(run, work, settings):
         manifest.write_text(run["resolved_spec"]["manifest"])
         cmd = [str(BINARY), "replay", "--manifest", str(manifest)]
     cmd.extend(["--input", str(source), "--output", str(work / "report.html"),
-                "--ledger", str(work / "orders.csv"), "--summary", str(work / "summary.json"),
-                "--equity", str(work / "equity.json")])
+                "--summary", str(work / "summary.json")])
+    if "windows" not in run["options"]:
+        cmd.extend(["--ledger", str(work / "orders.csv"), "--equity", str(work / "equity.json")])
     renew_timeout = min(settings.heartbeat, RENEW_TIMEOUT_SECONDS)
     if not renew(run, settings.lease, timeout=renew_timeout):
         return False
@@ -164,7 +165,8 @@ def finish(run, work, error=None):
         if current is None:
             return False
         if error is None:
-            for name in ARTIFACTS:
+            names = ("report.html", "summary.json", "manifest.json") if "windows" in run["options"] else ARTIFACTS
+            for name in names:
                 db.execute("INSERT INTO qbt_artifacts VALUES (%s, %s, %s)",
                            (run["id"], name, (work / name).read_bytes()))
         return True

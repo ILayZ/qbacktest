@@ -39,7 +39,7 @@ async function loadHistory(append = false) {
       row.dataset.id = run.id;
       const link = document.createElement("a");
       link.href = "?run=" + encodeURIComponent(run.id);
-      link.textContent = (run.strategy === "all" ? "All strategies" : run.strategy) + " · " + run.id.slice(0, 8);
+      link.textContent = (run.windows ? "Walk-forward · " : "") + (run.strategy === "all" ? "All strategies" : run.strategy) + " · " + run.id.slice(0, 8);
       const details = document.createElement("span");
       const daily = run.daily_limit == null ? "" : " · daily limit " + run.daily_limit;
       details.textContent = new Date(run.created_at).toLocaleString() + " · capital " + run.capital + daily;
@@ -90,10 +90,31 @@ async function refresh() {
     for (const [name, url] of Object.entries(run.artifacts)) {
       const link = document.createElement("a");
       link.href = url;
-      link.textContent = labels[name] || name;
+      link.textContent = run.options.windows && name === "summary.json" ? "Download window metrics" : labels[name] || name;
       el("artifacts").append(link);
     }
-    void comparison.show(run);
+    el("windows-result").hidden = true;
+    if (run.options.windows) {
+      comparison.reset();
+      if (run.artifacts["summary.json"]) {
+        const data = await request(run.artifacts["summary.json"]);
+        if (current !== generation) return;
+        const percent = n => (n * 100).toFixed(2) + "%";
+        el("window-average").textContent = "Arithmetic mean of independent window returns: " + percent(data.mean_return);
+        const rows = data.windows.map(w => {
+          const row = document.createElement("tr");
+          for (const value of [w.bounds.test_start, w.bounds.test_last, w.initial_capital, w.final_equity.toFixed(2),
+                               percent(w.total_return), percent(w.max_drawdown)]) {
+            row.insertCell().textContent = value;
+          }
+          return row;
+        });
+        el("window-rows").replaceChildren(...rows);
+        el("windows-result").hidden = false;
+      }
+    } else {
+      void comparison.show(run);
+    }
     const cancellable = ["queued","running"].includes(run.state);
     el("cancel-run").hidden = !cancellable;
     if (cancellable) timer = setTimeout(refresh, 1000);
@@ -118,6 +139,7 @@ function setWorking(value) {
 }
 
 function openRun(run) {
+  el("windows-result").hidden = true;
   comparison.reset();
   active = run.id;
   selectedRun = null;
@@ -165,6 +187,14 @@ el("edit-copy").onclick = async () => {
       const dataset = await request("/v1/datasets/" + encodeURIComponent(source.dataset));
       if (source.id !== active) return;
       rememberDataset(dataset);
+    }
+    const windows = source.options.windows;
+    el("evaluation").value = windows ? "windows" : "standard";
+    el("evaluation").dispatchEvent(new Event("change"));
+    if (windows) {
+      el("train-months").value = windows.train_months;
+      el("test-months").value = windows.test_months;
+      el("step-months").value = windows.step_months;
     }
     strategy.value = source.options.strategy;
     strategy.dispatchEvent(new Event("change"));
@@ -299,6 +329,14 @@ async function setup() {
       input.disabled = !applies;
     }
   }
+  el("evaluation").onchange = () => {
+    const windows = el("evaluation").value === "windows";
+    el("window-options").disabled = !windows;
+    el("window-options").hidden = !windows;
+    strategy.options[strategy.options.length - 1].disabled = windows;
+    if (windows && strategy.value === catalog.comparison_id) strategy.value = catalog.default_strategy;
+    showStrategyFields();
+  };
   strategy.addEventListener("change", showStrategyFields);
   showStrategyFields();
   for (const input of form.querySelectorAll('input[name][type="number"], input[name][type="checkbox"]')) {
@@ -318,7 +356,7 @@ form.onsubmit = async event => {
     return;
   }
   const options = {strategy: form.elements.strategy.value, limit_includes_fees: form.elements.limit_includes_fees.checked};
-  for (const input of form.querySelectorAll('input[type="number"]')) {
+  for (const input of form.querySelectorAll('input[name][type="number"]')) {
     if (!input.disabled && input.value !== "") options[input.name] = input.valueAsNumber;
   }
   setWorking(true);
@@ -340,7 +378,12 @@ form.onsubmit = async event => {
       el("symbol").value = "";
       el("quote-currency").value = "";
     }
-    const run = await request("/v1/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({dataset:datasetId, options})});
+    const payload = {dataset: datasetId, options};
+    if (el("evaluation").value === "windows") {
+      payload.windows = {train_months: el("train-months").valueAsNumber,
+                        test_months: el("test-months").valueAsNumber, step_months: el("step-months").valueAsNumber};
+    }
+    const run = await request("/v1/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
     el("copy-note").textContent = "";
     await openRun(run);
   } catch (err) {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use argh::FromArgs;
+use qbt_engine::backtest::{Backtester, WalkForwardConfig, WalkForwardResult};
 use qbt_engine::report::json::DatasetMetadata;
 use qbt_engine::run::{BUILTINS, RunSpec, builtin_strategy};
 use qbt_engine::strategy::catalog::{
@@ -182,6 +183,9 @@ pub struct WalkForwardArgs {
     /// step months
     #[argh(option, default = r#"6"#)]
     pub step: u32,
+    /// write per-window metrics and UTC bar boundaries as JSON
+    #[argh(option)]
+    pub summary: Option<PathBuf>,
     /// output path
     #[argh(
         option,
@@ -342,6 +346,24 @@ impl ReplayArgs {
         let series =
             PriceSeries::from_path(&self.input, series_symbol(&manifest.dataset_metadata))?;
         manifest.verify(&series)?;
+        if let Some(windows) = &manifest.windows {
+            anyhow::ensure!(
+                self.ledger.is_none() && self.equity.is_none(),
+                "Windowed runs support HTML and summary outputs"
+            );
+            let [strategy] = manifest.spec.strategies.as_slice() else {
+                anyhow::bail!("Windowed runs require one strategy");
+            };
+            anyhow::ensure!(!manifest.spec.include_benchmarks, "Unexpected benchmarks");
+            let bt = Backtester::new(manifest.spec.config.clone());
+            let result = bt.walk_forward_with_budget(
+                &series,
+                |_, _| strategy.clone(),
+                windows,
+                &manifest.spec.budget,
+            )?;
+            return render_windows(&result, windows, &self.output, self.summary.as_deref());
+        }
         render(
             &manifest.spec,
             &series,
@@ -419,9 +441,13 @@ fn render(
 
 impl WalkForwardArgs {
     pub fn execute(&self) -> Result<()> {
-        use qbt_engine::backtest::{BacktestConfig, Backtester, WalkForwardConfig};
+        use qbt_engine::backtest::BacktestConfig;
         use qbt_engine::data::PriceSeries;
-        use qbt_engine::report::HtmlReport;
+        distinct_paths(&[
+            Some(&self.input),
+            Some(&self.output),
+            self.summary.as_deref(),
+        ])?;
 
         // CF-017: Validate positive intervals and window sizes at CLI boundary
         if self.train == 0 {
@@ -455,17 +481,50 @@ impl WalkForwardArgs {
 
         let wf_result = bt.walk_forward(&series, strategy_factory, &wf_config)?;
 
-        let results = wf_result.out_of_sample_results;
-        HtmlReport::generate(&results, &self.output)?;
-
-        println!(
-            "Walk-forward complete: {} OOS periods, avg return {:.2}%, consistency {:.0}%",
-            results.len(),
-            wf_result.total_oos_return * 100.0,
-            wf_result.consistency * 100.0
-        );
-        Ok(())
+        render_windows(
+            &wf_result,
+            &wf_config,
+            &self.output,
+            self.summary.as_deref(),
+        )
     }
+}
+
+fn render_windows(
+    result: &WalkForwardResult,
+    config: &WalkForwardConfig,
+    output: &Path,
+    summary: Option<&Path>,
+) -> Result<()> {
+    let results = &result.out_of_sample_results;
+    qbt_engine::report::HtmlReport::generate(results, output)?;
+    if let Some(path) = summary {
+        use serde_json::json;
+        let windows: Vec<_> = results
+            .iter()
+            .zip(&result.bounds)
+            .map(|(run, bounds)| {
+                json!({
+                    "bounds": bounds, "strategy": run.strategy_name,
+                    "initial_capital": run.initial_capital, "final_equity": run.final_value,
+                    "total_return": run.total_return, "max_drawdown": run.max_drawdown,
+                    "sharpe_ratio": run.sharpe_ratio, "completed_trades": run.num_trades
+                })
+            })
+            .collect();
+        let data = json!({
+            "version": 1, "config": config, "windows": windows,
+            "mean_return": result.total_oos_return, "positive_fraction": result.consistency
+        });
+        std::fs::write(path, serde_json::to_vec(&data)?)?;
+    }
+    println!(
+        "Walk-forward complete: {} OOS periods, avg return {:.2}%, consistency {:.0}%",
+        results.len(),
+        result.total_oos_return * 100.0,
+        result.consistency * 100.0
+    );
+    Ok(())
 }
 
 impl ReportArgs {

@@ -91,9 +91,18 @@ impl Default for WalkForwardConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowBounds {
+    pub history_start: chrono::DateTime<chrono::Utc>,
+    pub test_start: chrono::DateTime<chrono::Utc>,
+    pub test_last: chrono::DateTime<chrono::Utc>,
+}
+
 /// Walk-forward result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalkForwardResult {
+    #[serde(default)]
+    pub bounds: Vec<WindowBounds>,
     pub out_of_sample_results: Vec<BacktestResult>,
     /// Arithmetic mean of independent window returns (legacy field name).
     pub total_oos_return: f64,
@@ -429,6 +438,16 @@ impl Backtester {
         strategy_factory: impl Fn(u32, u32) -> Strategy + Send + Sync,
         wf_config: &WalkForwardConfig,
     ) -> Result<WalkForwardResult> {
+        self.walk_forward_with_budget(series, strategy_factory, wf_config, &BuyBudget::default())
+    }
+
+    pub fn walk_forward_with_budget(
+        &self,
+        series: &PriceSeries,
+        strategy_factory: impl Fn(u32, u32) -> Strategy + Send + Sync,
+        wf_config: &WalkForwardConfig,
+        budget: &BuyBudget,
+    ) -> Result<WalkForwardResult> {
         // CF-017: Validate walk-forward config at engine boundary
         if wf_config.train_months == 0 {
             anyhow::bail!("Walk-forward train_months must be positive");
@@ -459,6 +478,7 @@ impl Backtester {
             );
         }
 
+        let mut bounds = Vec::new();
         let mut oos_results: Vec<BacktestResult> = Vec::new();
         let mut start = 0usize;
 
@@ -475,7 +495,12 @@ impl Backtester {
                 symbol: series.symbol.clone(),
                 bars: oos_bars,
             };
-            let oos_result = self.run(&oos_series, &strategy)?;
+            let oos_result = self.run_with_budget(&oos_series, &strategy, budget, |_| Ok(()))?;
+            bounds.push(WindowBounds {
+                history_start: series.bars[start].timestamp,
+                test_start: series.bars[train_end].timestamp,
+                test_last: series.bars[test_end - 1].timestamp,
+            });
             oos_results.push(oos_result);
 
             start += step_bars;
@@ -501,6 +526,7 @@ impl Backtester {
         );
 
         Ok(WalkForwardResult {
+            bounds,
             out_of_sample_results: oos_results,
             total_oos_return,
             avg_oos_sharpe,
