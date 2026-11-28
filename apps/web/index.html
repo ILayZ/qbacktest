@@ -23,7 +23,8 @@
 <label>Quote currency <input id="quote-currency" maxlength="64" placeholder="Optional"></label>
 </div>
 </details>
-<label>Evaluation <select id="evaluation"><option value="standard">Full dataset</option><option value="windows">Walk-forward</option></select></label>
+<label for="evaluation">Evaluation</label>
+<select id="evaluation"><option value="standard">Full dataset</option><option value="windows">Walk-forward</option></select>
 <fieldset id="window-options" hidden disabled><legend>Windows (30-day months)</legend>
 <label>History offset <input id="train-months" type="number" min="1" step="1" required value="1"></label>
 <label>Test length <input id="test-months" type="number" min="1" step="1" required value="1"></label>
